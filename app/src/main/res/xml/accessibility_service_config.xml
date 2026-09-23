@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Rationale for minimal capabilities:
+  - We only need to know when the foreground window changes so the controller can
+    verify/repair the clock (event: TYPE_WINDOW_STATE_CHANGED).
+  - canRetrieveWindowContent = false: the app never reads another app's content.
+  - canPerformGestures = false: no synthetic gestures required in the current
+    overlay-based implementation.
+  If a future SystemUI strategy needs UI automation on a specific OEM settings
+  screen, this file will be updated and the rationale recorded in README.md.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:description="@string/accessibility_service_description"
+    android:notificationTimeout="100"
+    android:summary="@string/accessibility_service_description" />

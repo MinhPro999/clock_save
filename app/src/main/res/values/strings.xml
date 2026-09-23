@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Status Bar Clock</string>
+    <string name="clock_title">STATUS BAR CLOCK</string>
+    <string name="clock_description">Hiển thị đồng hồ trên thanh trạng thái</string>
+
+    <string name="accessibility_service_label">Status Bar Clock</string>
+    <string name="accessibility_service_description">Hiển thị đồng hồ ở góc trái thanh trạng thái, kể cả khi ứng dụng khác (Google Maps, YouTube…) đang mở. Dịch vụ không đọc nội dung màn hình và không thu thập dữ liệu người dùng.</string>
+</resources>

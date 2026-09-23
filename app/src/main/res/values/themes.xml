@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Framework theme only. DeviceDefault resolves to the device-specific
+         default (TV/box variant on Android TV devices). No appcompat/material
+         dependency needed. -->
+    <style name="Theme.StatusBarClock" parent="android:Theme.DeviceDefault.NoActionBar" />
+</resources>

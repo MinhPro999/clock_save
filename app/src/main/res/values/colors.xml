@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="clock_overlay_text">#F2F2F2</color>
+    <color name="clock_overlay_shadow">#8C000000</color>
+    <color name="title_text">#FFFFFFFF</color>
+    <color name="description_text">#B3FFFFFF</color>
+    <color name="icon_background">#1B2631</color>
+</resources>
