@@ -1,6 +1,8 @@
 package com.minh.statusbarclock
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ClockStateMachineTest {
@@ -98,6 +100,63 @@ class ClockStateMachineTest {
         val machine = ClockStateMachine()
         machine.onEnable()
         machine.onActivationResult(systemUiOk = false, overlayOk = false)
+        assertEquals(ClockState.ERROR_RECOVERABLE, machine.state)
+        machine.onOverlayActive()
+        assertEquals(ClockState.ON_ACTIVE_OVERLAY, machine.state)
+    }
+
+    // --- Phase 2.1: reboot / cold-start restore -------------------------------
+
+    @Test
+    fun `cold start with saved enabled permits activation`() {
+        // New app process: the state machine starts in OFF while the saved
+        // preference still says enabled after a reboot.
+        val machine = ClockStateMachine()
+        assertEquals(ClockState.OFF, machine.state)
+
+        val permitted = machine.restoreEnabledAfterReconnect(enabled = true)
+
+        assertTrue(permitted)
+        assertEquals(ClockState.ON_PENDING_ACCESSIBILITY, machine.state)
+        // The activation path may now complete:
+        machine.onOverlayActive()
+        assertEquals(ClockState.ON_ACTIVE_OVERLAY, machine.state)
+    }
+
+    @Test
+    fun `cold start with saved disabled stays off`() {
+        val machine = ClockStateMachine()
+        assertFalse(machine.restoreEnabledAfterReconnect(enabled = false))
+        assertEquals(ClockState.OFF, machine.state)
+    }
+
+    @Test
+    fun `reconnect from off runtime state with saved enabled permits activation`() {
+        // The runtime state went back to OFF (e.g. disable during a previous
+        // session) but the saved preference was re-enabled externally.
+        val machine = ClockStateMachine()
+        machine.onEnable()
+        machine.onDisable()
+        assertEquals(ClockState.OFF, machine.state)
+
+        val permitted = machine.restoreEnabledAfterReconnect(enabled = true)
+
+        assertTrue(permitted)
+        assertEquals(ClockState.ON_PENDING_ACCESSIBILITY, machine.state)
+        machine.onOverlayActive()
+        assertEquals(ClockState.ON_ACTIVE_OVERLAY, machine.state)
+    }
+
+    @Test
+    fun `restore from recoverable error state permits reactivation`() {
+        val machine = ClockStateMachine()
+        machine.onEnable()
+        machine.onActivationResult(systemUiOk = false, overlayOk = false)
+        assertEquals(ClockState.ERROR_RECOVERABLE, machine.state)
+
+        val permitted = machine.restoreEnabledAfterReconnect(enabled = true)
+
+        assertTrue(permitted)
         assertEquals(ClockState.ERROR_RECOVERABLE, machine.state)
         machine.onOverlayActive()
         assertEquals(ClockState.ON_ACTIVE_OVERLAY, machine.state)

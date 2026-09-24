@@ -1,4 +1,4 @@
-# IMPLEMENTATION REPORT — Status Bar Clock (Phase 2 Remediation)
+# IMPLEMENTATION REPORT — Status Bar Clock (Phase 2.1 Final Hardening)
 
 **Ngày:** 24/09/2026
 **Trạng thái tổng thể:**
@@ -12,6 +12,13 @@ Hardware validation: PENDING
 APK: NOT BUILT
 AAB: NOT BUILT
 ```
+
+Phase 2.1 hardening:
+
+- cold-start/reboot state restoration fixed
+- SystemUI event handling hardened
+- overlay health check hardened
+- recovery loop debounced
 
 > Phase 2 quy định **không build APK/AAB**. Toàn bộ validate dưới đây chỉ gồm
 > source, test, lint và compile — không chạy `assembleDebug/Release`,
@@ -211,5 +218,154 @@ NO AAB WAS BUILT
 [✓] APK chưa build
 [✓] AAB chưa build
 [ ] Hardware validation (PENDING — cần Android Box kết nối ADB)
+```
+
+---
+
+# 10. Phase 2.1 — Final Hardening
+
+## 10.1 Blocker #1 — Reboot / cold-start lifecycle (ĐÃ SỬA)
+
+Trước đây `ClockStateMachine` luôn khởi tạo `state = OFF`; sau reboot process
+mới, saved `enabled = true` nhưng `activate()` chỉ chấp nhận
+`ON_PENDING_ACCESSIBILITY`/`ERROR_RECOVERABLE` → clock không được tạo lại.
+
+Sửa:
+
+- `ClockStateMachine.restoreEnabledAfterReconnect(enabled)` — transition thuần
+  Kotlin (không Android framework): khi reconnect với saved enabled, OFF được
+  nâng lên `ON_PENDING_ACCESSIBILITY` và trả `true` = được phép activate.
+- `ClockController.onAccessibilityConnected()` gọi helper trên trước
+  `ensureHomeDetector()` → `activate()`. Không reset preference, không cần mở
+  lại app, không cần ADB, không dùng `BOOT_COMPLETED`.
+- Chuỗi trạng thái: `OFF → ON_PENDING_ACCESSIBILITY → ON_ACTIVE_OVERLAY`.
+
+## 10.2 Blocker #2 — SystemUI / system window events (ĐÃ SỬA)
+
+- `SystemPackageDetection` (mới, pure): chỉ liệt kê package có bằng chứng là
+  system window — duy nhất `com.android.systemui`. Không hard-code danh sách
+  OEM giả định.
+- `ClockVisibilityPolicy` phân loại foreground thành `ForegroundKind`:
+  `HOME` (hide) → `SYSTEM_UI` (giữ visibility hiện tại) → `APP`/`UNKNOWN`
+  (show). HOME được kiểm tra trước danh sách system window.
+- Chính sách mới: một event SystemUI đơn lẻ **không bao giờ** tự làm mất
+  clock (Maps → SystemUI → vẫn visible) và **không bao giờ** tạo duplicate
+  clock trên Home (Home → SystemUI → vẫn hidden).
+- Không thay đổi phạm vi đọc dữ liệu: vẫn chỉ dùng `eventType` +
+  `packageName`; `canRetrieveWindowContent="false"`, không text/
+  contentDescription/node tree/screenshot/gesture.
+
+## 10.3 Blocker #3 — Overlay attached state (ĐÃ SỬA)
+
+- `AccessibilityOverlayClockStrategy.isWindowActuallyAttached()` kiểm tra
+  `overlayAttached + clockView != null + clockView.isAttachedToWindow`
+  (`isAttachedToWindow` có từ API 19, minSdk 26 → an toàn).
+- `ensureOverlayHealth()` (gọi trên mỗi foreground/config event): cache sai
+  (OEM tự hủy window) → clear stale reference; window chỉ được attach lại khi
+  thực sự detached — không bao giờ hai window overlay cùng lúc.
+- `OverlayHealth` (mới, pure) chứa luật `isActuallyAttached`/`needsReattach`
+  để test được không cần Android framework.
+- HOME vẫn chỉ `view.visibility = GONE` giữ window attached (chuyển nhanh
+  Home ⇄ Maps); chỉ detach khi OFF/service destroy/config change/window fail.
+
+## 10.4 Blocker #4 — Error recovery loop (ĐÃ SỬA)
+
+- `RepairDebouncer` (mới, pure, clock-injectable): tối thiểu 1000 ms giữa hai
+  lần repair attempt; `tryAcquire`/`delayMillis` hoàn toàn unit-testable.
+- `ClockController.scheduleRepair()` dùng `repairScheduled` flag (tránh
+  `Handler.hasCallbacks` cần API 29 trong khi minSdk 26 — lỗi này đã được
+  lint bắt và sửa) + Handler hiện có, không thêm coroutine/dependency.
+
+## 10.5 Các phần rà soát khác
+
+- **Invariants visibility:** OFF → không overlay; pending → không visible;
+  active + HOME → hidden; active + APP/unknown → visible — giữ nguyên và phủ
+  bởi unit test.
+- **Configuration changes:** detach → attach → khôi phục `desiredVisible`;
+  `enabled=true` không bị mất (preference không bị đụng tới).
+- **HomeDetector:** vẫn query động `ACTION_MAIN + CATEGORY_HOME`; chỉ package
+  foreground thực sự nằm trong resolved set mới là HOME; không hard-code
+  launcher.
+- **Foreground initial state:** service connect khi chưa có event (e.g. đang
+  ở Maps) → `foregroundPackage = null` → show overlay (không mất clock).
+- **MainActivity:** giữ nguyên title + description + Switch; **Manifest** giữ
+  tối giản (chỉ `BIND_ACCESSIBILITY_SERVICE`); **accessibility XML** giữ
+  `typeWindowStateChanged` + `canRetrieveWindowContent=false` +
+  `canPerformGestures=false`. `SystemUiClockStrategy` giữ nguyên
+  future/diagnostic, không nằm trên runtime path.
+
+## 10.6 Validation (Phase 2.1)
+
+```text
+./gradlew --version ✓ (Gradle 9.3.1, JDK 17)
+./gradlew help ✓
+./gradlew tasks ✓
+./gradlew test ✓ — BUILD SUCCESSFUL: 61 tests, 0 failures, 0 errors
+./gradlew :app:compileDebugKotlin ✓ — BUILD SUCCESSFUL
+./gradlew lint ✓ — 0 errors; 1 warning AndroidGradlePluginVersion (Gradle 9.8.0
+       có sẵn nhưng giữ pin 9.3.1 vì toolchain decision — xem mục 1)
+```
+
+Bộ test sau Phase 2.1:
+
+```text
+ClockStateMachineTest        16 (thêm 4 test reboot/cold-start restore)
+ClockVisibilityPolicyTest    20 (thêm 8 test SystemUI keep-visibility)
+HomeDetectionTest             5 (thêm 1 test dynamic membership)
+OverlayHealthTest             5 (mới: attached / stale detached / no duplicate)
+RepairDebouncerTest           6 (mới: min-interval giữa các repair attempt)
+ClockTextTest                 4 (giữ nguyên)
+TimeAlignerTest               5 (giữ nguyên)
+TOTAL                        61 — 0 failures, 0 errors
+```
+
+Các ca bắt buộc (spec mục 23):
+
+1. Cold start + saved enabled → activation permitted ✓
+2. Reconnect after OFF runtime state + saved enabled ✓
+3. SystemUI package không đẩy sai visibility transition ✓
+4. Home → hidden ✓
+5. Other app → visible ✓
+6. Unknown package → visible ✓
+7. Overlay health: attached ✓
+8. Overlay health: stale detached ✓
+9. No duplicate attach ✓
+10. Error retry/debounce behavior ✓
+
+## 10.7 Definition of Done — Phase 2.1
+
+```text
+[✓] cold-start/reboot restore path fixed
+[✓] saved enabled=true restores runtime state
+[✓] SystemUI events cannot incorrectly force Home → visible
+[✓] Home detection remains dynamic
+[✓] unknown foreground package → visible
+[✓] overlay health can detect stale attachment
+[✓] no duplicate attach
+[✓] repair is debounced
+[✓] OFF removes overlay
+[✓] Home hides overlay
+[✓] Other app shows overlay
+[✓] service disconnect clears lifecycle
+[✓] tests pass (61/61)
+[✓] lint pass (0 errors)
+[✓] compileDebugKotlin pass
+[✓] no APK (đã quét toàn workspace: 0 file .apk)
+[✓] no AAB (đã quét toàn workspace: 0 file .aab)
+[ ] Hardware validation (PENDING — Android Box chưa kết nối ADB)
+```
+
+Không tuyên bố: OEM compatibility guaranteed, reboot verified, Maps/YouTube
+verified trên Box. Chỉ có thể nói: **Source implementation and static/unit
+validation complete. Target-device validation is still pending.**
+
+---
+
+```text
+PHASE 2.1 COMPLETE
+SOURCE READY FOR MANUAL APK BUILD
+HARDWARE VALIDATION PENDING
+APK NOT BUILT
+AAB NOT BUILT
 ```
 

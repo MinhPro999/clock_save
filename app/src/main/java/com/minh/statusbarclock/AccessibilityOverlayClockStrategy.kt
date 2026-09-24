@@ -75,29 +75,59 @@ class AccessibilityOverlayClockStrategy(
     }
 
     /**
+     * True only when the overlay window is genuinely attached: the cached
+     * flag, the view reference and the view's own attachment must all agree.
+     * `isAttachedToWindow` is available since API 19, far below minSdk 26.
+     */
+    fun isWindowActuallyAttached(): Boolean =
+        OverlayHealth.isActuallyAttached(
+            overlayAttached = overlayAttached,
+            viewPresent = clockView != null,
+            viewAttachedToWindow = clockView?.isAttachedToWindow == true
+        )
+
+    /** Whether the overlay view is currently VISIBLE (drives the SystemUI
+     *  keep-current-visibility rule in [ClockVisibilityPolicy]). */
+    val isVisible: Boolean
+        get() = clockView?.visibility == View.VISIBLE
+
+    /**
+     * Re-validates the real attachment state. When the cache is stale (the
+     * system silently removed the window) the stale reference is dropped so
+     * the next show() attaches a fresh window — never a second one.
+     *
+     * Called by [ClockController] on every foreground/configuration event.
+     *
+     * @return true when the overlay window is really attached right now.
+     */
+    fun ensureOverlayHealth(): Boolean {
+        if (isWindowActuallyAttached()) return true
+        if (overlayAttached) {
+            Log.w(TAG, "Overlay window detached by system — dropping stale reference")
+        }
+        dropStaleWindow()
+        return false
+    }
+
+    /**
      * Make the overlay visible, attaching the window if needed. Idempotent:
-     * does nothing when the overlay is already visible.
+     * does nothing when the overlay is already visible. A stale attachment
+     * (window removed by the system) is repaired without duplicating windows.
      *
      * @return false only when the window could not be attached (recoverable).
      */
     fun show(): Boolean {
         desiredVisible = true
-        if (overlayAttached) {
-            val view = clockView
-            if (view != null && view.visibility != View.VISIBLE) {
+        if (isWindowActuallyAttached()) {
+            val view = clockView ?: return false
+            if (view.visibility != View.VISIBLE) {
                 renderTime()
                 view.visibility = View.VISIBLE
                 scheduleNextMinute()
             }
             return true
         }
-        if (!attach()) {
-            Log.e(TAG, "Failed to attach overlay window")
-            return false
-        }
-        renderTime()
-        scheduleNextMinute()
-        return true
+        return attachAndRender()
     }
 
     /**
@@ -116,17 +146,27 @@ class AccessibilityOverlayClockStrategy(
         if (!overlayAttached) return
         detach()
         if (desiredVisible) {
-            if (attach()) {
-                renderTime()
-                scheduleNextMinute()
-            }
+            attachAndRender()
         }
     }
 
     // --- Window management ----------------------------------------------------
 
+    private fun attachAndRender(): Boolean {
+        if (!attach()) {
+            Log.e(TAG, "Failed to attach overlay window")
+            return false
+        }
+        renderTime()
+        scheduleNextMinute()
+        return true
+    }
+
     private fun attach(): Boolean {
-        if (overlayAttached) return true
+        if (isWindowActuallyAttached()) return true
+        // Stale cache (flag true, window gone): clear it first so the fresh
+        // window is the only one — two overlay windows must never coexist.
+        dropStaleWindow()
         val view = createClockView()
         return try {
             windowManager.addView(view, createLayoutParams())
@@ -139,6 +179,16 @@ class AccessibilityOverlayClockStrategy(
             Log.e(TAG, "addView failed", e)
             false
         }
+    }
+
+    /**
+     * Clears a stale window reference without calling removeView(): used only
+     * when the view is no longer attached, so there is nothing to remove.
+     */
+    private fun dropStaleWindow() {
+        handler.removeCallbacksAndMessages(null)
+        clockView = null
+        overlayAttached = false
     }
 
     private fun detach() {

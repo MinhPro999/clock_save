@@ -32,4 +32,13 @@ class HomeDetectionTest {
         assertFalse(HomeDetection.isHomePackage(emptySet(), "com.example.launcher"))
         assertFalse(HomeDetection.isHomePackage(emptySet(), "com.google.android.apps.maps"))
     }
+
+    @Test
+    fun `membership is purely dynamic with no hard-coded package`() {
+        // Any OEM launcher in the resolved set counts as HOME; anything else
+        // (including com.android.systemui) does not — no hard-coded list.
+        val exoticLauncher = setOf("com.oem.box.launcher")
+        assertTrue(HomeDetection.isHomePackage(exoticLauncher, "com.oem.box.launcher"))
+        assertFalse(HomeDetection.isHomePackage(exoticLauncher, "com.android.systemui"))
+    }
 }

@@ -5,6 +5,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 
 /**
@@ -31,6 +32,7 @@ object ClockController {
 
     private val machine = ClockStateMachine()
     private val handler = Handler(Looper.getMainLooper())
+    private val repairDebouncer = RepairDebouncer(REPAIR_DEBOUNCE_MS)
 
     // Deliberate static reference: the strategy (and the service context it
     // holds) is stopped and cleared in onAccessibilityDisconnected(), so the
@@ -49,12 +51,16 @@ object ClockController {
 
     private val repairRunnable = Runnable { repairIfNeeded() }
 
+    /** True while a repair attempt is queued on [handler]. Kept as a flag
+     *  because Handler.hasCallbacks needs API 29 (minSdk is 26). */
+    private var repairScheduled = false
+
     val currentState: ClockState
         get() = machine.state
 
     fun enable(context: Context) {
         Log.i(TAG, "enable()")
-        handler.removeCallbacksAndMessages(null)
+        cancelScheduledRepairs()
         ClockStateStore.setEnabled(context, true)
         machine.onEnable()
         ClockAccessibilityService.instance?.let { service ->
@@ -67,7 +73,7 @@ object ClockController {
 
     fun disable(context: Context) {
         Log.i(TAG, "disable()")
-        handler.removeCallbacksAndMessages(null)
+        cancelScheduledRepairs()
         stopOverlayStrategy()
         ClockStateStore.setEnabled(context, false)
         machine.onDisable()
@@ -75,7 +81,11 @@ object ClockController {
 
     fun onAccessibilityConnected(service: AccessibilityService) {
         Log.i(TAG, "onAccessibilityConnected state=${machine.state}")
-        if (ClockStateStore.isEnabled(service)) {
+        // Reboot / cold start: a fresh process starts in OFF even when the
+        // saved preference says enabled. Lift OFF back to a state where
+        // activation is permitted, so the clock is restored without user
+        // interaction, without ADB and without BOOT_COMPLETED.
+        if (machine.restoreEnabledAfterReconnect(ClockStateStore.isEnabled(service))) {
             ensureHomeDetector(service)
             activate(service)
         }
@@ -83,7 +93,7 @@ object ClockController {
 
     fun onAccessibilityDisconnected() {
         Log.i(TAG, "onAccessibilityDisconnected state=${machine.state}")
-        handler.removeCallbacksAndMessages(null)
+        cancelScheduledRepairs()
         stopOverlayStrategy()
         homeDetector = null
         foregroundPackage = null
@@ -103,8 +113,7 @@ object ClockController {
 
             ClockState.ERROR_RECOVERABLE -> {
                 // A new window change is a natural moment to retry activation.
-                handler.removeCallbacks(repairRunnable)
-                handler.postDelayed(repairRunnable, REPAIR_DEBOUNCE_MS)
+                scheduleRepair()
             }
 
             else -> {
@@ -151,10 +160,16 @@ object ClockController {
         val overlay = overlayStrategy ?: return
         if (machine.state != ClockState.ON_ACTIVE_OVERLAY) return
 
+        // Repair flow: verify the real attachment state on every foreground
+        // event. No remove + add churn while the window is healthy — the
+        // stale reference is only dropped when the window is really gone.
+        overlay.ensureOverlayHealth()
+
         val shouldShow = ClockVisibilityPolicy.shouldShowOverlay(
             state = machine.state,
             foregroundPackage = foregroundPackage,
-            isHomePackage = { pkg -> homeDetector?.isHomePackage(pkg) == true }
+            isHomePackage = { pkg -> homeDetector?.isHomePackage(pkg) == true },
+            currentVisible = overlay.isVisible
         )
         if (shouldShow) {
             if (!overlay.show()) {
@@ -168,7 +183,30 @@ object ClockController {
 
     // --- Repair ---------------------------------------------------------------
 
+    /**
+     * Schedules a repair attempt at least [REPAIR_DEBOUNCE_MS] after the last
+     * granted attempt, so a failure -> retry -> failure loop cannot hammer the
+     * window manager from a stream of window events.
+     */
+    private fun scheduleRepair() {
+        if (repairScheduled) return
+        repairScheduled = true
+        val delay = repairDebouncer.delayMillis(SystemClock.elapsedRealtime())
+        handler.postDelayed(repairRunnable, delay)
+    }
+
+    private fun cancelScheduledRepairs() {
+        repairScheduled = false
+        handler.removeCallbacksAndMessages(null)
+    }
+
     private fun repairIfNeeded() {
+        repairScheduled = false
+        if (!repairDebouncer.tryAcquire(SystemClock.elapsedRealtime())) {
+            // Another repair already ran within the debounce window.
+            scheduleRepair()
+            return
+        }
         when (machine.state) {
             ClockState.ON_ACTIVE_OVERLAY -> applyVisibility()
 

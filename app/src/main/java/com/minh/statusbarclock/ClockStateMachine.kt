@@ -23,6 +23,26 @@ class ClockStateMachine {
         state = ClockState.ON_PENDING_ACCESSIBILITY
     }
 
+    /**
+     * Reboot / cold-start restore: a fresh process starts in OFF even when
+     * the saved preference says enabled. When the accessibility service
+     * (re)connects while the saved state is enabled, OFF must be lifted to
+     * ON_PENDING_ACCESSIBILITY so activation is permitted.
+     *
+     * Pure (no framework types) so the restore path is unit-testable.
+     *
+     * @param enabled the saved enabled preference at (re)connect time.
+     * @return true when the machine is now in a state where activation may run.
+     */
+    fun restoreEnabledAfterReconnect(enabled: Boolean): Boolean {
+        if (!enabled) return false
+        if (state == ClockState.OFF) {
+            state = ClockState.ON_PENDING_ACCESSIBILITY
+        }
+        return state == ClockState.ON_PENDING_ACCESSIBILITY ||
+            state == ClockState.ERROR_RECOVERABLE
+    }
+
     /** The accessibility overlay became the active runtime strategy. */
     fun onOverlayActive() {
         state = ClockState.ON_ACTIVE_OVERLAY

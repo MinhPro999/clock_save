@@ -1,5 +1,6 @@
 package com.minh.statusbarclock
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -89,6 +90,110 @@ class ClockVisibilityPolicyTest {
                 ClockState.ON_ACTIVE_OVERLAY,
                 "com.example.launcher",
                 launcherUnknown
+            )
+        )
+    }
+
+    // --- Phase 2.1: SystemUI / system window events ---------------------------
+
+    @Test
+    fun `classify system ui package as system ui`() {
+        assertEquals(
+            ForegroundKind.SYSTEM_UI,
+            ClockVisibilityPolicy.classifyForeground("com.android.systemui", isHome)
+        )
+    }
+
+    @Test
+    fun `classify home before system ui`() {
+        // HOME has priority over the system-window list in the policy order.
+        val homeAndSystemUi: (String) -> Boolean = { it == "com.android.systemui" }
+        assertEquals(
+            ForegroundKind.HOME,
+            ClockVisibilityPolicy.classifyForeground("com.android.systemui", homeAndSystemUi)
+        )
+    }
+
+    @Test
+    fun `classify other app and unknown`() {
+        assertEquals(
+            ForegroundKind.APP,
+            ClockVisibilityPolicy.classifyForeground("com.google.android.apps.maps", isHome)
+        )
+        assertEquals(
+            ForegroundKind.UNKNOWN,
+            ClockVisibilityPolicy.classifyForeground(null, isHome)
+        )
+    }
+
+    @Test
+    fun `system ui event keeps overlay visible while visible`() {
+        assertTrue(
+            ClockVisibilityPolicy.shouldShowOverlay(
+                ClockState.ON_ACTIVE_OVERLAY,
+                "com.android.systemui",
+                isHome,
+                currentVisible = true
+            )
+        )
+    }
+
+    @Test
+    fun `system ui event keeps overlay hidden while hidden`() {
+        assertFalse(
+            ClockVisibilityPolicy.shouldShowOverlay(
+                ClockState.ON_ACTIVE_OVERLAY,
+                "com.android.systemui",
+                isHome,
+                currentVisible = false
+            )
+        )
+    }
+
+    @Test
+    fun `single system ui event never hides a visible clock`() {
+        // Maps -> SystemUI transient event -> the clock must stay visible.
+        assertTrue(shouldShow(ClockState.ON_ACTIVE_OVERLAY, "com.google.android.apps.maps"))
+        assertTrue(
+            ClockVisibilityPolicy.shouldShowOverlay(
+                ClockState.ON_ACTIVE_OVERLAY,
+                "com.android.systemui",
+                isHome,
+                currentVisible = true
+            )
+        )
+    }
+
+    @Test
+    fun `single system ui event never creates a duplicate clock on home`() {
+        // HOME -> SystemUI transient event -> the clock must stay hidden.
+        assertFalse(shouldShow(ClockState.ON_ACTIVE_OVERLAY, "com.example.launcher"))
+        assertFalse(
+            ClockVisibilityPolicy.shouldShowOverlay(
+                ClockState.ON_ACTIVE_OVERLAY,
+                "com.android.systemui",
+                isHome,
+                currentVisible = false
+            )
+        )
+    }
+
+    @Test
+    fun `system ui state never drives visibility in non-active states`() {
+        assertFalse(
+            ClockVisibilityPolicy.shouldShowOverlay(
+                ClockState.OFF,
+                "com.android.systemui",
+                isHome,
+                currentVisible = true
+            )
+        )
+        assertFalse(
+            ClockVisibilityPolicy.shouldShowOverlay(
+                ClockState.ON_PENDING_ACCESSIBILITY,
+                "com.android.systemui",
+                isHome,
+                currentVisible = true
             )
         )
     }
