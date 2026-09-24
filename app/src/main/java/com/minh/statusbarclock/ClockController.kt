@@ -1,6 +1,7 @@
 package com.minh.statusbarclock
 
 import android.accessibilityservice.AccessibilityService
+import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
@@ -9,16 +10,19 @@ import android.util.Log
 /**
  * Single decision point of the app.
  *
- * Flow:
- *   enable()
- *     -> SystemUiClockStrategy.start()
- *          +-- success -> ON_ACTIVE_SYSTEMUI
- *          +-- fail    -> AccessibilityOverlayClockStrategy.start()
- *                             +-- success -> ON_ACTIVE_OVERLAY
- *                             +-- fail    -> ERROR_RECOVERABLE
+ * Runtime path (Phase 2 — Accessibility Overlay is the only critical path):
  *
- * The activity is only a UI control. The accessibility service is the
- * independent lifecycle that owns the strategies.
+ *   enable()
+ *     -> Accessibility Service connected
+ *     -> determine foreground package
+ *     -> HOME      -> hide overlay
+ *     -> other app -> show overlay
+ *
+ * No foreground service, no WRITE_SECURE_SETTINGS, no SYSTEM_ALERT_WINDOW and
+ * no ADB dependency are involved.
+ *
+ * [SystemUiClockStrategy] is kept as a future/diagnostic extension only and is
+ * never part of the runtime path.
  */
 object ClockController {
 
@@ -28,11 +32,20 @@ object ClockController {
     private val machine = ClockStateMachine()
     private val handler = Handler(Looper.getMainLooper())
 
+    // Deliberate static reference: the strategy (and the service context it
+    // holds) is stopped and cleared in onAccessibilityDisconnected(), so the
+    // reference never outlives the accessibility service binding.
+    @SuppressLint("StaticFieldLeak")
     @Volatile
     private var overlayStrategy: AccessibilityOverlayClockStrategy? = null
 
     @Volatile
-    private var systemUiStrategy: SystemUiClockStrategy? = null
+    private var homeDetector: HomeDetector? = null
+
+    /** Last foreground package seen via TYPE_WINDOW_STATE_CHANGED. Used only
+     *  for the HOME decision — never logged, never persisted. */
+    @Volatile
+    private var foregroundPackage: String? = null
 
     private val repairRunnable = Runnable { repairIfNeeded() }
 
@@ -45,6 +58,7 @@ object ClockController {
         ClockStateStore.setEnabled(context, true)
         machine.onEnable()
         ClockAccessibilityService.instance?.let { service ->
+            ensureHomeDetector(service)
             activate(service)
         }
         // If the service is not connected yet, onAccessibilityConnected()
@@ -54,7 +68,7 @@ object ClockController {
     fun disable(context: Context) {
         Log.i(TAG, "disable()")
         handler.removeCallbacksAndMessages(null)
-        stopAllStrategies()
+        stopOverlayStrategy()
         ClockStateStore.setEnabled(context, false)
         machine.onDisable()
     }
@@ -62,6 +76,7 @@ object ClockController {
     fun onAccessibilityConnected(service: AccessibilityService) {
         Log.i(TAG, "onAccessibilityConnected state=${machine.state}")
         if (ClockStateStore.isEnabled(service)) {
+            ensureHomeDetector(service)
             activate(service)
         }
     }
@@ -69,21 +84,33 @@ object ClockController {
     fun onAccessibilityDisconnected() {
         Log.i(TAG, "onAccessibilityDisconnected state=${machine.state}")
         handler.removeCallbacksAndMessages(null)
-        stopAllStrategies()
+        stopOverlayStrategy()
+        homeDetector = null
+        foregroundPackage = null
         machine.onAccessibilityDisconnected()
         // When Android re-binds the service (e.g. after reboot),
         // onAccessibilityConnected() restores the feature.
     }
 
-    /** Foreground window changed — verify/repair the clock if needed. */
-    fun onForegroundWindowChanged() {
-        if (machine.state != ClockState.ON_ACTIVE_SYSTEMUI &&
-            machine.state != ClockState.ON_ACTIVE_OVERLAY
-        ) {
-            return
+    /**
+     * Foreground package changed (TYPE_WINDOW_STATE_CHANGED). Only the package
+     * name is used, for the HOME decision — it is never logged.
+     */
+    fun onForegroundPackageChanged(packageName: String?) {
+        foregroundPackage = packageName
+        when (machine.state) {
+            ClockState.ON_ACTIVE_OVERLAY -> applyVisibility()
+
+            ClockState.ERROR_RECOVERABLE -> {
+                // A new window change is a natural moment to retry activation.
+                handler.removeCallbacks(repairRunnable)
+                handler.postDelayed(repairRunnable, REPAIR_DEBOUNCE_MS)
+            }
+
+            else -> {
+                // OFF / pending: remember the package, wait for activation.
+            }
         }
-        handler.removeCallbacks(repairRunnable)
-        handler.postDelayed(repairRunnable, REPAIR_DEBOUNCE_MS)
     }
 
     fun onConfigurationChanged() {
@@ -92,79 +119,72 @@ object ClockController {
 
     // --- Activation -----------------------------------------------------------
 
+    private fun ensureHomeDetector(context: Context) {
+        if (homeDetector == null) {
+            homeDetector = HomeDetector(context)
+        }
+    }
+
     private fun activate(service: AccessibilityService) {
-        if (machine.state == ClockState.ON_ACTIVE_SYSTEMUI ||
-            machine.state == ClockState.ON_ACTIVE_OVERLAY
+        if (machine.state == ClockState.ON_ACTIVE_OVERLAY) {
+            // Feature already active — just refresh the visibility for the
+            // current foreground package.
+            applyVisibility()
+            return
+        }
+        if (machine.state != ClockState.ON_PENDING_ACCESSIBILITY &&
+            machine.state != ClockState.ERROR_RECOVERABLE
         ) {
             return
         }
+        // Fresh activation on the overlay path. Any stale strategy window is
+        // dropped first so only one overlay can exist at a time.
+        stopOverlayStrategy()
+        overlayStrategy = AccessibilityOverlayClockStrategy(service)
+        machine.onOverlayActive()
+        applyVisibility()
+    }
 
-        // Priority 1: native SystemUI clock.
-        val systemUi = SystemUiClockStrategy(service)
-        val systemUiOk = systemUi.isSupported() && systemUi.start()
-        if (systemUiOk) {
-            systemUiStrategy = systemUi
-            machine.onActivationResult(systemUiOk = true, overlayOk = false)
-            Log.i(TAG, "Active strategy: SYSTEM_UI")
-            return
-        }
+    // --- Visibility -----------------------------------------------------------
 
-        // Priority 2: accessibility overlay fallback.
-        val overlay = AccessibilityOverlayClockStrategy(service)
-        val overlayOk = overlay.start()
-        if (overlayOk) {
-            overlayStrategy = overlay
-        }
-        machine.onActivationResult(systemUiOk = false, overlayOk = overlayOk)
-        Log.i(
-            TAG,
-            if (overlayOk) "Active strategy: ACCESSIBILITY_OVERLAY"
-            else "Activation failed: ERROR_RECOVERABLE"
+    private fun applyVisibility() {
+        val overlay = overlayStrategy ?: return
+        if (machine.state != ClockState.ON_ACTIVE_OVERLAY) return
+
+        val shouldShow = ClockVisibilityPolicy.shouldShowOverlay(
+            state = machine.state,
+            foregroundPackage = foregroundPackage,
+            isHomePackage = { pkg -> homeDetector?.isHomePackage(pkg) == true }
         )
+        if (shouldShow) {
+            if (!overlay.show()) {
+                Log.e(TAG, "Overlay activation failed — ERROR_RECOVERABLE")
+                machine.onRecoverableError()
+            }
+        } else {
+            overlay.hide()
+        }
     }
 
     // --- Repair ---------------------------------------------------------------
 
     private fun repairIfNeeded() {
         when (machine.state) {
-            ClockState.ON_ACTIVE_OVERLAY -> {
-                // Re-attach if the system dropped the overlay window.
-                val overlay = overlayStrategy ?: return
-                if (!overlay.start()) {
-                    machine.onRecoverableError()
-                }
-            }
+            ClockState.ON_ACTIVE_OVERLAY -> applyVisibility()
 
-            ClockState.ON_ACTIVE_SYSTEMUI -> {
-                val systemUi = systemUiStrategy ?: return
-                if (!systemUi.isSupported()) {
-                    Log.w(TAG, "SystemUI strategy lost support — falling back to overlay")
-                    fallbackToOverlay()
+            ClockState.ERROR_RECOVERABLE -> {
+                ClockAccessibilityService.instance?.let { service ->
+                    activate(service)
                 }
             }
 
             else -> {
-                // OFF / pending / error: nothing to repair.
+                // OFF / pending: nothing to repair.
             }
         }
     }
 
-    private fun fallbackToOverlay() {
-        val service = ClockAccessibilityService.instance ?: return
-        systemUiStrategy?.stop()
-        systemUiStrategy = null
-        val overlay = AccessibilityOverlayClockStrategy(service)
-        if (overlay.start()) {
-            overlayStrategy = overlay
-            machine.onSystemUiRepairFailed() // -> ON_ACTIVE_OVERLAY
-        } else {
-            machine.onRecoverableError()
-        }
-    }
-
-    private fun stopAllStrategies() {
-        systemUiStrategy?.stop()
-        systemUiStrategy = null
+    private fun stopOverlayStrategy() {
         overlayStrategy?.stop()
         overlayStrategy = null
     }

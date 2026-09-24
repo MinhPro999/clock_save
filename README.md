@@ -13,26 +13,27 @@ Google Maps đang foreground
 => Clock vẫn nhìn thấy.
 ```
 
-Không có tính năng phụ nào khác: không giây, không widget, không floating ball,
-không Settings riêng, không quảng cáo, không Internet, không server, không
-analytics, không database.
+Không có tính năng phụ nào khác: không giây, không date, không widget, không
+floating ball, không Settings riêng, không quảng cáo, không Internet, không
+server, không analytics, không database.
 
 ---
 
 ## Trạng thái hiện tại
 
 ```text
-PROJECT READY FOR MANUAL APK BUILD
-APK BUILD NOT EXECUTED
-Hardware validation: PENDING (Android Box chưa kết nối ADB trong lúc triển khai)
+Source implementation: COMPLETE
+Build configuration: READY
+Unit tests: PASS (37/37)
+Lint: PASS
+Hardware validation: PENDING (Android Box chưa kết nối ADB)
+APK: NOT BUILT
+AAB: NOT BUILT
 ```
 
-> ⚠️ **Phiên bản này CHƯA được build thành APK.** Chủ dự án cần kiểm tra source
-> code rồi tự build (xem mục “Cách build sau này”).
->
-> `./gradlew test` đã chạy và đạt 19/19. `./gradlew lint` cần tải bộ lint 32.1.0
-> (~94 MB) nhưng mạng máy hiện tại quá chậm — lý do đã ghi trong
-> `IMPLEMENTATION_REPORT.md`; khi mạng tốt chỉ cần chạy lại `./gradlew lint`.
+> ⚠️ **Project này CHƯA được build thành APK/AAB** (đúng quy trình Phase 2:
+> chỉ validate source, test, lint và compile). Chủ dự án tự build khi sang
+> Phase tiếp theo (xem mục “Cách build sau này”).
 
 ---
 
@@ -55,19 +56,21 @@ Toolchain (đã kiểm chứng với môi trường thực tế, xem `IMPLEMENTA
 | compileSdk / targetSdk | 36 |
 | minSdk | 26 |
 
-> Ghi chú: file `gradle.properties` đang trỏ `android.aapt2FromMavenOverride`
-> tới `aapt2` trong SDK của máy hiện tại (để tránh phải tải artifact từ Maven
-> trên mạng chậm). Khi build trên máy khác, hãy sửa đường dẫn này hoặc xóa dòng
-> override.
+> Ghi chú: file `gradle.properties` có đúng một dòng trỏ đường dẫn máy cá nhân:
+> `android.aapt2FromMavenOverride` tới `aapt2` trong SDK máy hiện tại (bắt buộc
+> vì mạng không tải được artifact aapt2 từ Maven). Khi build trên máy khác, hãy
+> sửa đường dẫn này hoặc xóa dòng override.
 
 Mở thư mục `status_bar_clock/` bằng Android Studio, hoặc dùng dòng lệnh:
 
 ```bash
 # Kiểm tra cấu hình build (không tạo APK)
+./gradlew --version
 ./gradlew help
 ./gradlew tasks
 ./gradlew test
 ./gradlew lint
+./gradlew :app:compileDebugKotlin
 ```
 
 ### Cách bật Accessibility
@@ -80,34 +83,51 @@ Mở thư mục `status_bar_clock/` bằng Android Studio, hoặc dùng dòng l�
 
 ### Cách dùng Switch
 
-- **ON**: đồng hồ luôn hiển thị ở góc trái Status Bar (ưu tiên dùng Clock thật
-  của SystemUI; nếu ROM không hỗ trợ thì dùng Accessibility Overlay).
-- **OFF**: tắt đồng hồ, overlay bị gỡ hoàn toàn, trạng thái được lưu lại.
+- **ON**: overlay Accessibility bật. Khi ứng dụng khác ở foreground (Maps,
+  YouTube…) đồng hồ hiển thị ở góc trái; khi ở Home thì overlay ẩn (không bị
+  duplicate clock với đồng hồ của launcher/SystemUI).
+- **OFF**: tắt hoàn toàn, overlay bị gỡ, trạng thái được lưu lại.
 
 ---
 
-## Kiến trúc ngắn gọn
+## Kiến trúc
 
 ```text
-MainActivity (chỉ là UI: 1 Switch)
+AccessibilityService (TYPE_WINDOW_STATE_CHANGED -> packageName)
       |
       v
-ClockAccessibilityService (lifecycle độc lập)
+ClockController (state machine + visibility policy)
       |
-      +--> ClockController (quyết định chiến lược, state machine)
-                |
-                +--> SystemUiClockStrategy          (ưu tiên 1: Clock thật của SystemUI)
-                +--> AccessibilityOverlayClockStrategy (ưu tiên 2: TYPE_ACCESSIBILITY_OVERLAY)
+      v
+AccessibilityOverlayClockStrategy (TYPE_ACCESSIBILITY_OVERLAY)
+      |
+      +-- HOME       => overlay hidden
+      +-- OTHER APP  => overlay visible
 ```
 
-Quy tắc:
+Quy tắc runtime:
 
+- **Runtime duy nhất là Accessibility Overlay.** Không Foreground Service,
+  không `WRITE_SECURE_SETTINGS`, không `SYSTEM_ALERT_WINDOW`, không phụ thuộc
+  ADB.
+- `SystemUiClockStrategy` (điều khiển Clock thật của SystemUI) hiện chỉ là
+  **future/diagnostic extension**: giữ lại trong source nhưng controller không
+  hề gọi nó, và `knownHooks = emptyList()` không ảnh hưởng runtime.
 - **Không timer 1 giây.** Overlay chỉ redraw mỗi phút, căn đúng ranh giới phút.
-- **Không Foreground Service, không WakeLock, không BootReceiver** cho đến khi
-  diagnostic thực tế chứng minh là bắt buộc.
-- **Không đọc nội dung màn hình**: `canRetrieveWindowContent=false`.
+- **Không add/remove window liên tục theo từng event.** `show()/hide()` chỉ đổi
+  visibility của view; nếu visibility đã đúng thì không làm gì.
+- **Không đọc nội dung màn hình**: `canRetrieveWindowContent=false`; chỉ dùng
+  `event.packageName` cho quyết định HOME, không log package/content của app khác.
 - Activity có thể bị destroy/recreate bất kỳ lúc nào; Service giữ Clock hoạt động.
 - Trạng thái duy nhất được lưu: `enabled = true/false` (SharedPreferences).
+
+### Window & Clock
+
+- Window type: `TYPE_ACCESSIBILITY_OVERLAY` (layer 30 — nằm trên
+  `TYPE_STATUS_BAR` layer 17 trong AOSP).
+- Flags tối thiểu: `FLAG_NOT_FOCUSABLE | FLAG_NOT_TOUCHABLE | FLAG_LAYOUT_IN_SCREEN`.
+- Gravity `TOP | START`, vị trí `x = 0`, `y = 0`.
+- Hiển thị `HH:mm` / `hh:mm` theo 24-hour setting của hệ thống.
 
 ## File chính
 
@@ -115,11 +135,13 @@ Quy tắc:
 app/src/main/java/com/minh/statusbarclock/
 ├── MainActivity.kt                       # 1 màn hình, 1 Switch
 ├── ClockAccessibilityService.kt          # Accessibility Service
-├── ClockController.kt                    # Quyết định chiến lược
+├── ClockController.kt                    # Quyết định show/hide overlay
+├── ClockVisibilityPolicy.kt              # Luật hiển thị (thuần Kotlin)
+├── HomeDetector.kt                       # Phát hiện launcher (ACTION_MAIN + CATEGORY_HOME)
 ├── ClockStateMachine.kt                  # State machine thuần Kotlin
 ├── ClockStrategy.kt                      # Interface chung
-├── SystemUiClockStrategy.kt              # Chiến lược ưu tiên 1
-├── AccessibilityOverlayClockStrategy.kt  # Chiến lược fallback
+├── AccessibilityOverlayClockStrategy.kt  # Runtime chính (overlay)
+├── SystemUiClockStrategy.kt              # Future/diagnostic extension
 ├── ClockStateStore.kt                    # SharedPreferences (enabled)
 ├── ClockText.kt                          # Format HH:mm (thuần Kotlin)
 └── TimeAligner.kt                        # Căn ranh giới phút (thuần Kotlin)
@@ -131,15 +153,16 @@ app/src/main/java/com/minh/statusbarclock/
 |---|---|---|
 | `BIND_ACCESSIBILITY_SERVICE` | Có | Bắt buộc để đăng ký Accessibility Service — chức năng chính. |
 | Internet | **Không** | Ứng dụng không có chức năng mạng. |
-| `SYSTEM_ALERT_WINDOW` | **Không** | Ưu tiên `TYPE_ACCESSIBILITY_OVERLAY`; chỉ thêm nếu diagnostic chứng minh bắt buộc. |
-| Foreground Service | **Không** | Chưa cần; chỉ thêm khi lifecycle của overlay bị hệ thống chấm dứt trên thiết bị thật. |
-| `RECEIVE_BOOT_COMPLETED` | **Không** | Android tự bind lại Accessibility Service sau reboot; chỉ thêm nếu test thực tế thất bại. |
+| `SYSTEM_ALERT_WINDOW` | **Không** | Overlay dùng `TYPE_ACCESSIBILITY_OVERLAY` (không phải `TYPE_APPLICATION_OVERLAY`). |
+| Foreground Service | **Không** | Accessibility Service tự giữ lifecycle; chưa có bằng chứng bắt buộc. |
+| `RECEIVE_BOOT_COMPLETED` | **Không** | Android tự bind lại Accessibility Service sau reboot. |
 | `WRITE_SECURE_SETTINGS` | **Không** | Không hợp lệ cho app release; ADB chỉ dùng cho diagnostic. |
 
 ## Hardware validation (chờ thiết bị)
 
-Android Box mục tiêu chưa kết nối ADB trong lúc triển khai, nên phần kiểm chứng
-phần cứng đang ở trạng thái **PENDING**.
+Android Box mục tiêu chưa kết nối ADB, nên phần kiểm chứng phần cứng đang ở
+trạng thái **PENDING**. Chưa có bất kỳ khẳng định nào về reboot hay tương thích
+OEM cho tới khi test trên thiết bị thật.
 
 Khi Box kết nối ADB, chạy theo thứ tự:
 
@@ -153,31 +176,24 @@ tools/diagnose_device.sh youtube
 tools/compare_statusbar.sh
 ```
 
-Dựa trên bằng chứng thu được, quyết định:
-
-- Nếu ROM có cơ chế SystemUI kiểm soát Clock khả dụng → đăng ký
-  `SystemUiHook` đã kiểm chứng trong `SystemUiClockStrategy.knownHooks`.
-- Nếu không → giữ Accessibility Overlay (hiện là chiến lược mặc định hoạt động).
-
 ### Test matrix sau khi có thiết bị
 
-- Clock hiển thị trên Home.
-- Clock hiển thị khi Google Maps foreground.
-- Clock hiển thị khi YouTube foreground.
+- Home: overlay **ẩn** (không duplicate clock).
+- Google Maps / YouTube foreground: overlay **hiển thị**.
 - Clock không chặn touch, không ảnh hưởng app đang chạy.
-- Màn hình tắt/mở, xoay ngang/dọc, reboot.
+- Màn hình tắt/mở, xoay ngang/dọc, reboot (Accessibility re-bind).
+- Bật/tắt Switch, persistence sau khi thoát app.
 
 ## Cách build sau này
 
-> Chủ dự án kiểm tra source trước, sau đó tự build bằng một trong các lệnh sau:
+> Phase hiện tại **không build APK/AAB**. Khi chuyển sang phase build, chủ dự án
+> tự chạy:
 
 ```bash
 ./gradlew assembleDebug     # APK debug
 ./gradlew assembleRelease   # APK release (cần cấu hình signing cho release)
 ./gradlew installDebug      # cài lên thiết bị đang kết nối ADB
 ```
-
-Lưu ý: project này **chưa hề** được build APK trong quá trình triển khai.
 
 ## Tham khảo kỹ thuật
 
@@ -189,7 +205,6 @@ Lưu ý: project này **chưa hề** được build APK trong quá trình triể
   https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start
 - AGP 9.1 release notes:
   https://developer.android.com/build/releases/agp-9-1-0-release-notes
-- AGP 9.4 release notes (được spec đề xuất; chưa dùng vì mạng không tải được Gradle 9.6):
-  https://developer.android.com/build/releases/agp-9-4-0-release-notes
 - AOSP Status Bar Clock:
   https://android.googlesource.com/platform/frameworks/base/+/19ed5b0b29d7bf821bcae9ba5b088df03c7056d3/packages/SystemUI/src/com/android/systemui/statusbar/policy/Clock.java
+

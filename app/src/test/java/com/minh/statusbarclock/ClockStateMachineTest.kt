@@ -84,4 +84,22 @@ class ClockStateMachineTest {
         machine.onAccessibilityDisconnected()
         assertEquals(ClockState.ON_PENDING_ACCESSIBILITY, machine.state)
     }
+
+    @Test
+    fun `overlay activation moves pending to active overlay`() {
+        val machine = ClockStateMachine()
+        machine.onEnable()
+        machine.onOverlayActive()
+        assertEquals(ClockState.ON_ACTIVE_OVERLAY, machine.state)
+    }
+
+    @Test
+    fun `overlay activation retries from recoverable error`() {
+        val machine = ClockStateMachine()
+        machine.onEnable()
+        machine.onActivationResult(systemUiOk = false, overlayOk = false)
+        assertEquals(ClockState.ERROR_RECOVERABLE, machine.state)
+        machine.onOverlayActive()
+        assertEquals(ClockState.ON_ACTIVE_OVERLAY, machine.state)
+    }
 }

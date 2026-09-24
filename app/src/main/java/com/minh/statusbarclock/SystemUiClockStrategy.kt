@@ -7,7 +7,11 @@ import android.provider.Settings
 import android.util.Log
 
 /**
- * Priority-1 strategy: keep the native SystemUI Clock visible.
+ * FUTURE / DIAGNOSTIC extension — NOT part of the Phase 2 runtime path.
+ *
+ * The runtime always uses [AccessibilityOverlayClockStrategy]; this class is
+ * never instantiated by [ClockController] and `knownHooks = emptyList()` cannot
+ * make the application unusable.
  *
  * Pipeline per spec: Detect -> Probe -> Enable -> Verify -> Monitor -> Repair.
  *
@@ -19,9 +23,8 @@ import android.util.Log
  * device profile that was verified in hardware diagnostics.
  *
  * Until a verified hook for the target Android Box exists, this strategy
- * reports "unsupported" and the controller falls back to the overlay.
- * After `tools/diagnose_device.sh` produces evidence, register a new
- * [SystemUiHook] in [knownHooks].
+ * reports "unsupported". After `tools/diagnose_device.sh` produces evidence,
+ * register a new [SystemUiHook] in [knownHooks].
  */
 class SystemUiClockStrategy(private val context: Context) : ClockStrategy {
 

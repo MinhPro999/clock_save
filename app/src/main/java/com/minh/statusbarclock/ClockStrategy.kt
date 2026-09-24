@@ -3,9 +3,8 @@ package com.minh.statusbarclock
 /**
  * Common contract for clock display strategies.
  *
- * Implementations:
- * - [SystemUiClockStrategy] (priority 1, native SystemUI clock)
- * - [AccessibilityOverlayClockStrategy] (priority 2, fallback overlay)
+ * Runtime implementation (Phase 2): [AccessibilityOverlayClockStrategy].
+ * [SystemUiClockStrategy] is a future/diagnostic extension only.
  */
 interface ClockStrategy {
     /** Whether this strategy can work on the current device. */

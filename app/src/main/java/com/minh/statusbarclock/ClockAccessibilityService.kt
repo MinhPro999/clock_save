@@ -11,12 +11,19 @@ import android.view.accessibility.AccessibilityEvent
 
 /**
  * Accessibility service — the independent lifecycle that owns the clock
- * strategies.
+ * runtime.
+ *
+ * Runtime flow:
+ *   onAccessibilityEvent(TYPE_WINDOW_STATE_CHANGED)
+ *     -> ClockController.onForegroundPackageChanged(event.packageName)
+ *     -> HOME: hide overlay / other app: show overlay
  *
  * Privacy guarantees:
  * - canRetrieveWindowContent = false: never reads other apps' content.
  * - canPerformGestures = false: never injects gestures.
- * - never logs screen content, package activity or any user data.
+ * - only event.packageName is used (for the HOME decision); never text,
+ *   contentDescription, rootInActiveWindow or AccessibilityNodeInfo.
+ * - no screenshots; packages/content of other apps are never logged.
  */
 class ClockAccessibilityService : AccessibilityService() {
 
@@ -64,9 +71,11 @@ class ClockAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
-        // Foreground-window transitions only. No content is read or logged.
+        // Foreground-window transitions only. The package name is passed to the
+        // controller for the HOME decision. Text, contentDescription, the node
+        // tree and screen content are never read or logged.
         if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            ClockController.onForegroundWindowChanged()
+            ClockController.onForegroundPackageChanged(event.packageName?.toString())
         }
     }
 
